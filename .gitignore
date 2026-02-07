@@ -1,5 +1,5 @@
 .venv
 .env
-data/
-logs/
+/data/
+/logs/
 __pycache__
