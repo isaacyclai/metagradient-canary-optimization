@@ -13,7 +13,7 @@ import json
 import sys
 sys.path.insert(0, '.')
 
-from src.models import wrn16_4
+from src.models import wrn16_4, resnet9
 from src.data import get_dataloaders, CombinedTrainDataset, create_mislabeled_canaries
 from src.auditing import audit_steinke, audit_mahloujifar
 from src.utils import set_seed, get_device, load_canaries, ExperimentLogger
@@ -66,6 +66,7 @@ def run_experiment(
     total_steps: int,
     eval_interval: int,
     device: str,
+    model,
     optimized_canaries_path: str = None,
     seed: int = 42
 ):
@@ -79,6 +80,7 @@ def run_experiment(
         total_steps: Total training steps
         eval_interval: Evaluate every N steps
         device: Device
+        model: Model factory function
         optimized_canaries_path: Path to optimized canaries (for metagradient)
         seed: Random seed
     
@@ -112,7 +114,7 @@ def run_experiment(
     )
     
     # Initialize model
-    model = wrn16_4(num_classes=10, use_group_norm=False).to(device)
+    model = model(num_classes=10).to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
     criterion = nn.CrossEntropyLoss()
@@ -165,7 +167,12 @@ def main():
     parser.add_argument("--canary-path", type=str, default=None, help="Path to optimized canaries")
     parser.add_argument("--data-dir", type=str, default="./data", help="Data directory")
     parser.add_argument("--output", type=str, default="figure2_results.json", help="Output file")
+    parser.add_argument("--model", type=str, default="wrn16_4", choices=["wrn16_4", "resnet9"],
+                        help="Model architecture to use")
     args = parser.parse_args()
+    
+    # Select model factory
+    model = wrn16_4 if args.model == "wrn16_4" else resnet9
     
     device = get_device()
     print(f"Using device: {device}")
@@ -196,6 +203,7 @@ def main():
                 total_steps=args.steps,
                 eval_interval=args.eval_interval,
                 device=device,
+                model=model,
                 optimized_canaries_path=args.canary_path,
                 seed=seed
             )

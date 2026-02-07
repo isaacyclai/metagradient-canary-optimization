@@ -28,6 +28,7 @@ def run_dp_experiment(
     target_delta: float,
     num_epochs: int,
     device: str,
+    model,
     optimized_canaries_path: str = None,
     seed: int = 42
 ):
@@ -41,6 +42,7 @@ def run_dp_experiment(
         target_delta: Target DP delta
         num_epochs: Number of training epochs
         device: Device
+        model: Model factory function
         optimized_canaries_path: Path to optimized canaries
         seed: Random seed
     
@@ -65,8 +67,7 @@ def run_dp_experiment(
     in_mask[perm[:m//2]] = True
     
     # Initialize model
-    # model = wrn16_4(num_classes=10, use_group_norm=True)
-    model = resnet9(num_classes=10)
+    model = model(num_classes=10)
     
     # Train with DP-SGD
     print(f"Training with DP-SGD (target ε={target_epsilon}, δ={target_delta})...")
@@ -118,7 +119,12 @@ def main():
     parser.add_argument("--canary-path", type=str, default=None, help="Path to optimized canaries")
     parser.add_argument("--data-dir", type=str, default="./data", help="Data directory")
     parser.add_argument("--output", type=str, default="table2_results.json", help="Output file")
+    parser.add_argument("--model", type=str, default="wrn16_4", choices=["wrn16_4", "resnet9"],
+                        help="Model architecture to use")
     args = parser.parse_args()
+    
+    # Select model factory
+    model = wrn16_4 if args.model == "wrn16_4" else resnet9
     
     device = get_device()
     print(f"Using device: {device}")
@@ -151,6 +157,7 @@ def main():
                 target_delta=args.delta,
                 num_epochs=args.epochs,
                 device=device,
+                model=model,
                 optimized_canaries_path=args.canary_path,
                 seed=seed
             )
