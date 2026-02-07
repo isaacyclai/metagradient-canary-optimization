@@ -26,10 +26,6 @@ set -e
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
-# Load modules (adjust for your cluster)
-module load python/3.12
-module load cuda/12.9
-
 # Activate virtual environment (adjust path as needed)
 source .venv/bin/activate
 
