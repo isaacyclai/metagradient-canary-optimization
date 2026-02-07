@@ -11,6 +11,8 @@ from opacus.validators import ModuleValidator
 from typing import Tuple, Optional
 from tqdm import tqdm
 
+from src.data import CombinedTrainDataset
+
 
 def make_model_dp_compatible(model: nn.Module) -> nn.Module:
     """Make a model compatible with DP training.
@@ -125,8 +127,8 @@ def train_dpsgd_with_canaries(
 ) -> Tuple[nn.Module, float]:
     """Train model with DP-SGD including canaries.
     
-    Note: For proper DP accounting, canaries should be part of the 
-    DataLoader, not added separately. This is a simplified version.
+    Canaries are properly integrated into the dataloader for correct
+    DP accounting.
     
     Args:
         model: Model to train
@@ -145,26 +147,40 @@ def train_dpsgd_with_canaries(
     Returns:
         Tuple of (trained model, achieved epsilon)
     """
+    
     # Make model DP-compatible
     model = make_model_dp_compatible(model)
     model = model.to(device)
     model.train()
     
-    # Get IN canaries
-    in_canaries = canary_images[in_mask].to(device)
-    in_labels = canary_labels[in_mask].to(device)
+    # Create combined dataset with C_IN canaries properly integrated
+    combined_dataset = CombinedTrainDataset(
+        train_loader.dataset,
+        canary_images,
+        canary_labels,
+        in_mask
+    )
+    
+    # Create new dataloader with combined dataset
+    combined_loader = DataLoader(
+        combined_dataset,
+        batch_size=train_loader.batch_size,
+        shuffle=True,
+        num_workers=getattr(train_loader, 'num_workers', 0),
+        pin_memory=getattr(train_loader, 'pin_memory', False)
+    )
     
     # Setup optimizer
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
     criterion = nn.CrossEntropyLoss()
     
-    # Attach privacy engine
+    # Attach privacy engine to combined loader for correct DP accounting
     privacy_engine = PrivacyEngine()
     
-    model, optimizer, train_loader = privacy_engine.make_private_with_epsilon(
+    model, optimizer, combined_loader = privacy_engine.make_private_with_epsilon(
         module=model,
         optimizer=optimizer,
-        data_loader=train_loader,
+        data_loader=combined_loader,
         epochs=num_epochs,
         target_epsilon=target_epsilon,
         target_delta=target_delta,
@@ -177,19 +193,9 @@ def train_dpsgd_with_canaries(
     for epoch in pbar:
         total_loss = 0
         num_batches = 0
-        canary_idx = 0
         
-        for batch_x, batch_y in train_loader:
-            print(num_batches)
+        for batch_x, batch_y in combined_loader:
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            
-            # Add canaries to batch (simplified - proper implementation 
-            # should integrate canaries into the dataloader)
-            if canary_idx < len(in_canaries):
-                num_to_add = min(4, len(in_canaries) - canary_idx)
-                batch_x = torch.cat([batch_x, in_canaries[canary_idx:canary_idx+num_to_add]])
-                batch_y = torch.cat([batch_y, in_labels[canary_idx:canary_idx+num_to_add]])
-                canary_idx += num_to_add
             
             optimizer.zero_grad()
             outputs = model(batch_x)
@@ -209,3 +215,4 @@ def train_dpsgd_with_canaries(
     final_epsilon = privacy_engine.get_epsilon(target_delta)
     
     return model, final_epsilon
+
