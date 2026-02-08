@@ -20,8 +20,8 @@
 
 set -e
 
-# Create logs directory if it doesn't exist
-mkdir -p logs
+# Create directories
+mkdir -p logs results checkpoints
 
 # Activate virtual environment (adjust path as needed)
 source .venv/bin/activate
@@ -34,21 +34,34 @@ NUM_CANARIES="${NUM_CANARIES:-1000}"
 META_STEPS="${META_STEPS:-50}"
 EPOCHS_PER_STEP="${EPOCHS_PER_STEP:-12}"
 CANARY_LR="${CANARY_LR:-0.01}"
+MODEL_LR="${MODEL_LR:-0.1}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 SEED="${SEED:-42}"
 DATA_DIR="${DATA_DIR:-./data}"
 OUTPUT="${OUTPUT:-results/optimized_canaries_${SLURM_JOB_ID}.pt}"
-LOG_DIR="${LOG_DIR:-logs}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-checkpoints/job_${SLURM_JOB_ID}}"
+CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-10}"
+LOG_FILE="${LOG_FILE:-logs/canary_opt_${SLURM_JOB_ID}.json}"
 
-# Create output directory
+# Create output directories
 mkdir -p "$(dirname "$OUTPUT")"
+mkdir -p "$CHECKPOINT_DIR"
 
 echo "=============================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Running on: $(hostname)"
 echo "Started at: $(date)"
-echo "Meta steps: $META_STEPS"
-echo "Output: $OUTPUT"
+echo "=============================================="
+echo "Parameters:"
+echo "  Meta steps: $META_STEPS"
+echo "  Epochs per step: $EPOCHS_PER_STEP"
+echo "  Num canaries: $NUM_CANARIES"
+echo "  Canary LR: $CANARY_LR"
+echo "  Model LR: $MODEL_LR"
+echo "Output:"
+echo "  Canaries: $OUTPUT"
+echo "  Checkpoints: $CHECKPOINT_DIR (every $CHECKPOINT_INTERVAL steps)"
+echo "  Log file: $LOG_FILE"
 echo "=============================================="
 
 # Build command
@@ -57,11 +70,14 @@ CMD="uv run experiments/run_canary_opt.py \
     --meta-steps $META_STEPS \
     --epochs-per-step $EPOCHS_PER_STEP \
     --canary-lr $CANARY_LR \
+    --model-lr $MODEL_LR \
     --batch-size $BATCH_SIZE \
     --seed $SEED \
     --data-dir $DATA_DIR \
     --output $OUTPUT \
-    --log-dir $LOG_DIR"
+    --checkpoint-dir $CHECKPOINT_DIR \
+    --checkpoint-interval $CHECKPOINT_INTERVAL \
+    --log-file $LOG_FILE"
 
 echo "Command: $CMD"
 echo "=============================================="
