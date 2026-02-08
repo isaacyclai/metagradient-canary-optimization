@@ -11,8 +11,10 @@ Reference:
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-from typing import Tuple
-import copy
+from typing import Tuple, Optional, Dict, List
+import os
+import json
+from datetime import datetime
 from tqdm import tqdm
 
 from ..models.resnet9 import resnet9
@@ -30,8 +32,9 @@ def train_model_with_canaries(
     momentum: float = 0.9,
     weight_decay: float = 5e-4,
     batch_size: int = 128,
-    device: str = "cuda"
-) -> nn.Module:
+    device: str = "cuda",
+    log_interval: int = 0
+) -> Tuple[nn.Module, Dict]:
     """Train model on D ∪ C_IN.
     
     Args:
@@ -46,9 +49,10 @@ def train_model_with_canaries(
         weight_decay: Weight decay
         batch_size: Batch size for training
         device: Device to train on
+        log_interval: Log training stats every N batches (0 = disabled)
     
     Returns:
-        Trained model
+        Tuple of (trained model, training stats dict)
     """
     model = model.to(device)
     model.train()
@@ -80,8 +84,14 @@ def train_model_with_canaries(
     )
     criterion = nn.CrossEntropyLoss()
     
+    stats = {"epoch_losses": [], "epoch_accs": []}
+    
     for epoch in range(num_epochs):
-        for batch_x, batch_y in train_loader:
+        total_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for batch_idx, (batch_x, batch_y) in enumerate(train_loader):
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
             
             optimizer.zero_grad()
@@ -89,33 +99,35 @@ def train_model_with_canaries(
             loss = criterion(outputs, batch_y)
             loss.backward()
             optimizer.step()
+            
+            total_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += batch_y.size(0)
+            correct += predicted.eq(batch_y).sum().item()
         
         scheduler.step()
+        
+        epoch_loss = total_loss / len(train_loader)
+        epoch_acc = 100.0 * correct / total
+        stats["epoch_losses"].append(epoch_loss)
+        stats["epoch_accs"].append(epoch_acc)
     
-    return model
+    stats["final_loss"] = stats["epoch_losses"][-1] if stats["epoch_losses"] else 0
+    stats["final_acc"] = stats["epoch_accs"][-1] if stats["epoch_accs"] else 0
+    
+    return model, stats
 
 
-def compute_surrogate_loss(
+def compute_canary_stats(
     model: nn.Module,
     canary_images: torch.Tensor,
     canary_labels: torch.Tensor,
     in_mask: torch.Tensor,
     device: str = "cuda"
-) -> torch.Tensor:
-    """Compute the surrogate objective: L(w, C_IN) - L(w, C_OUT).
+) -> Dict:
+    """Compute detailed statistics on canary losses.
     
-    This is the loss gap between IN and OUT canaries.
-    We want to MINIMIZE this (low loss on IN, high loss on OUT).
-    
-    Args:
-        model: Trained model
-        canary_images: All canary images [m, 3, 32, 32]
-        canary_labels: All canary labels [m]
-        in_mask: Boolean mask for C_IN
-        device: Device
-    
-    Returns:
-        Surrogate loss (scalar)
+    Returns dict with IN/OUT loss means, stds, and accuracy.
     """
     model.eval()
     
@@ -125,15 +137,26 @@ def compute_surrogate_loss(
     
     criterion = nn.CrossEntropyLoss(reduction='none')
     
-    outputs = model(canary_images)
-    losses = criterion(outputs, canary_labels)
+    with torch.no_grad():
+        outputs = model(canary_images)
+        losses = criterion(outputs, canary_labels)
+        _, predicted = outputs.max(1)
+        
+        in_losses = losses[in_mask]
+        out_losses = losses[~in_mask]
+        
+        in_correct = predicted[in_mask].eq(canary_labels[in_mask]).sum().item()
+        out_correct = predicted[~in_mask].eq(canary_labels[~in_mask]).sum().item()
     
-    # ϕ(w) = L(w, C_IN) - L(w, C_OUT)
-    # Weight: +1 for IN, -1 for OUT
-    weights = in_mask.float() - (~in_mask).float()
-    surrogate = (weights * losses).mean()
-    
-    return surrogate
+    return {
+        "in_loss_mean": in_losses.mean().item(),
+        "in_loss_std": in_losses.std().item() if len(in_losses) > 1 else 0,
+        "out_loss_mean": out_losses.mean().item(),
+        "out_loss_std": out_losses.std().item() if len(out_losses) > 1 else 0,
+        "loss_gap": in_losses.mean().item() - out_losses.mean().item(),
+        "in_acc": 100.0 * in_correct / len(in_losses),
+        "out_acc": 100.0 * out_correct / len(out_losses),
+    }
 
 
 def optimize_canaries(
@@ -145,8 +168,11 @@ def optimize_canaries(
     model_lr: float = 0.1,
     batch_size: int = 128,
     device: str = "cuda",
-    verbose: bool = True
-) -> torch.Tensor:
+    verbose: bool = True,
+    checkpoint_dir: Optional[str] = None,
+    checkpoint_interval: int = 10,
+    log_file: Optional[str] = None
+) -> Tuple[torch.Tensor, List[Dict]]:
     """Algorithm 5: Metagradient Canary Optimization.
     
     Optimizes canary samples to maximize the loss gap between C_IN and C_OUT,
@@ -170,10 +196,19 @@ def optimize_canaries(
         batch_size: Batch size for training
         device: Device to use
         verbose: Print progress
+        checkpoint_dir: Directory to save checkpoints (None = no checkpoints)
+        checkpoint_interval: Save checkpoint every N meta-steps
+        log_file: Path to save detailed logs (None = no file logging)
     
     Returns:
-        Optimized canary images [m, 3, 32, 32]
+        Tuple of (optimized canary images, list of per-step statistics)
     """
+    # Setup logging
+    history = []
+    
+    if checkpoint_dir:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+    
     # Step 1: Initialize canaries
     canary_images, canary_labels = canary_dataset.get_canaries()
     canary_images = canary_images.to(device).clone().requires_grad_(True)
@@ -182,9 +217,20 @@ def optimize_canaries(
     # Get the training dataset (without canaries)
     train_dataset = train_loader.dataset
     
+    if verbose:
+        print(f"Starting canary optimization:")
+        print(f"  Meta-steps: {num_meta_steps}")
+        print(f"  Epochs per step: {num_epochs_per_step}")
+        print(f"  Num canaries: {len(canary_images)}")
+        print(f"  Device: {device}")
+        if checkpoint_dir:
+            print(f"  Checkpoints: {checkpoint_dir} (every {checkpoint_interval} steps)")
+    
     pbar = tqdm(range(num_meta_steps), disable=not verbose, desc="Meta-optimization")
     
     for t in pbar:
+        step_start = datetime.now()
+        
         # Step 2a: Random split into C_IN and C_OUT
         m = len(canary_images)
         perm = torch.randperm(m, device=device)
@@ -192,13 +238,10 @@ def optimize_canaries(
         in_mask[perm[:m//2]] = True
         
         # Step 2b: Train model on D ∪ C_IN
-        # Use fresh model each meta-step
         model = resnet9(num_classes=10).to(device)
-        
-        # Detach canaries for training (we'll compute gradient separately)
         canary_imgs_detached = canary_images.detach()
         
-        model = train_model_with_canaries(
+        model, train_stats = train_model_with_canaries(
             model=model,
             train_dataset=train_dataset,
             canary_images=canary_imgs_detached,
@@ -211,7 +254,6 @@ def optimize_canaries(
         )
         
         # Step 2c: Compute surrogate with gradient
-        # Forward pass with requires_grad canaries to get gradient
         model.eval()
         
         if canary_images.grad is not None:
@@ -221,7 +263,6 @@ def optimize_canaries(
         criterion = nn.CrossEntropyLoss(reduction='none')
         losses = criterion(outputs, canary_labels)
         
-        # Surrogate: L(C_IN) - L(C_OUT)
         in_mask_device = in_mask.to(device)
         weights = in_mask_device.float() - (~in_mask_device).float()
         surrogate = (weights * losses).mean()
@@ -229,15 +270,74 @@ def optimize_canaries(
         # Step 2d: Compute gradient and update canaries
         surrogate.backward()
         
-        # Signed gradient descent (as specified in paper)
+        grad_norm = 0.0
         with torch.no_grad():
             if canary_images.grad is not None:
+                grad_norm = canary_images.grad.abs().mean().item()
                 grad_sign = torch.sign(canary_images.grad)
                 canary_images.sub_(canary_lr * grad_sign)
-                # Clamp to valid image range [0, 1]
                 canary_images.clamp_(0, 1)
         
+        # Compute detailed stats
+        canary_stats = compute_canary_stats(
+            model, canary_images.detach(), canary_labels, in_mask_device, device
+        )
+        
+        step_time = (datetime.now() - step_start).total_seconds()
+        
+        step_log = {
+            "step": t,
+            "surrogate": surrogate.item(),
+            "grad_norm": grad_norm,
+            "train_acc": train_stats["final_acc"],
+            "train_loss": train_stats["final_loss"],
+            "step_time_sec": step_time,
+            **canary_stats
+        }
+        history.append(step_log)
+        
+        # Update progress bar
         if verbose:
-            pbar.set_postfix({"surrogate": f"{surrogate.item():.4f}"})
+            pbar.set_postfix({
+                "surr": f"{surrogate.item():.3f}",
+                "gap": f"{canary_stats['loss_gap']:.3f}",
+                "acc": f"{train_stats['final_acc']:.1f}%"
+            })
+        
+        # Save checkpoint
+        if checkpoint_dir and (t + 1) % checkpoint_interval == 0:
+            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_step{t+1}.pt")
+            torch.save({
+                "step": t + 1,
+                "canary_images": canary_images.detach().cpu(),
+                "canary_labels": canary_labels.cpu(),
+                "history": history,
+            }, checkpoint_path)
+            if verbose:
+                print(f"\n  Saved checkpoint: {checkpoint_path}")
     
-    return canary_images.detach().cpu()
+    # Save final log
+    if log_file:
+        with open(log_file, 'w') as f:
+            json.dump({
+                "config": {
+                    "num_meta_steps": num_meta_steps,
+                    "num_epochs_per_step": num_epochs_per_step,
+                    "canary_lr": canary_lr,
+                    "model_lr": model_lr,
+                    "num_canaries": m,
+                },
+                "history": history
+            }, f, indent=2)
+        if verbose:
+            print(f"Saved log to: {log_file}")
+    
+    # Print summary
+    if verbose and history:
+        print(f"\nOptimization complete:")
+        print(f"  Initial surrogate: {history[0]['surrogate']:.4f}")
+        print(f"  Final surrogate: {history[-1]['surrogate']:.4f}")
+        print(f"  Final loss gap (IN-OUT): {history[-1]['loss_gap']:.4f}")
+        print(f"  Final train accuracy: {history[-1]['train_acc']:.1f}%")
+    
+    return canary_images.detach().cpu(), history
