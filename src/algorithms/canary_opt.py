@@ -57,12 +57,17 @@ def train_model_with_canaries(
     model = model.to(device)
     model.train()
     
+    # Ensure canary tensors are on CPU for DataLoader
+    canary_images_cpu = canary_images.cpu() if canary_images.is_cuda else canary_images
+    canary_labels_cpu = canary_labels.cpu() if canary_labels.is_cuda else canary_labels
+    in_mask_cpu = in_mask.cpu() if in_mask.is_cuda else in_mask
+    
     # Create combined dataset: D ∪ C_IN
     combined_dataset = CombinedTrainDataset(
         train_dataset,
-        canary_images,
-        canary_labels,
-        in_mask
+        canary_images_cpu,
+        canary_labels_cpu,
+        in_mask_cpu
     )
     
     train_loader = DataLoader(
