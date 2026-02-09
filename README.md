@@ -33,7 +33,7 @@ uv run python experiments/run_audit_sgd.py \
 uv run python experiments/run_audit_dpsgd.py \
     --epochs 2 --epsilon 8.0 --num-canaries 50 --seeds 1 --model resnet9
 
-# Test DP-SGD audit with JAX (~2-5 min, requires: uv sync --extra jax)
+# Test DP-SGD audit with JAX (~2-5 min)
 uv run python experiments/run_audit_dpsgd_jax.py \
     --epochs 2 --epsilon 8.0 --num-canaries 50 --batch-size 512 --seeds 1
 ```
@@ -159,8 +159,11 @@ META_STEPS=2 EPOCHS_PER_STEP=2 NUM_CANARIES=50 sbatch scripts/run_canary_opt.sh
 # Test SGD audit (~1-2 min)
 STEPS=100 EVAL_INTERVAL=50 NUM_CANARIES=50 SEEDS=1 MODEL=resnet9 sbatch scripts/run_audit_sgd.sh
 
-# Test DP-SGD audit (~2-5 min)  
+# Test DP-SGD audit with Opacus (~2-5 min)  
 EPOCHS=2 NUM_CANARIES=50 SEEDS=1 BATCH_SIZE=512 MODEL=resnet9 sbatch scripts/run_audit_dpsgd.sh
+
+# Test DP-SGD audit with JAX (~2-5 min)
+EPOCHS=2 NUM_CANARIES=50 SEEDS=1 BATCH_SIZE=512 sbatch scripts/run_audit_dpsgd_jax.sh
 ```
 
 ### Interactive GPU Session
