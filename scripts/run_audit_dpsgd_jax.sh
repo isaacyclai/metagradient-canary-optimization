@@ -37,6 +37,7 @@ DELTA="${DELTA:-1e-5}"
 EPOCHS="${EPOCHS:-100}"
 NUM_CANARIES="${NUM_CANARIES:-1000}"
 BATCH_SIZE="${BATCH_SIZE:-4096}"
+MODEL="${MODEL:-wrn16_4}"
 SEEDS="${SEEDS:-5}"
 DATA_DIR="${DATA_DIR:-./data}"
 CANARY_PATH="${CANARY_PATH:-}"
@@ -52,6 +53,7 @@ echo "=============================================="
 echo "Parameters:"
 echo "  Epsilon: $EPSILON"
 echo "  Delta: $DELTA"
+echo "  Model: $MODEL"
 echo "  Epochs: $EPOCHS"
 echo "  Batch size: $BATCH_SIZE"
 echo "  Num canaries: $NUM_CANARIES"
@@ -69,6 +71,7 @@ CMD="uv run experiments/run_audit_dpsgd_jax.py \
     --epochs $EPOCHS \
     --num-canaries $NUM_CANARIES \
     --batch-size $BATCH_SIZE \
+    --model $MODEL \
     --seeds $SEEDS \
     --data-dir $DATA_DIR \
     --output $OUTPUT"

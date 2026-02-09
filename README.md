@@ -98,6 +98,7 @@ done
 ### 4. Audit DP-SGD with JAX (Recommended)
 
 The original paper uses jax-privacy. This version is more memory-efficient and matches the paper.
+Includes both **Steinke et al. (2023)** and **Mahloujifar et al. (2024)** auditing methods.
 
 **First-time setup (on cluster):**
 ```bash
@@ -111,15 +112,44 @@ uv run python experiments/run_audit_dpsgd_jax.py \
     --delta 1e-5 \
     --epochs 100 \
     --batch-size 4096 \
+    --model wrn16_4 \
     --num-canaries 1000 \
     --seeds 5 \
     --canary-path optimized_canaries.pt
 ```
 
+**Models:**
+- `wrn16_4` (default): Wide ResNet 16-4 per De et al. (2022) - matches paper
+- `resnet9`: Faster but different from paper
+
+**Auditing methods:**
+- **Steinke (Algorithm 2):** Unpaired membership inference with binomial statistics
+- **Mahloujifar (Algorithm 3+4):** Paired IN/OUT comparison with f-DP bounds
+
+**Output format (per seed):**
+```
+Achieved epsilon: 7.97          # Theoretical guarantee
+Steinke epsilon: 2.15          # Empirical lower bound (Steinke)
+Mahloujifar epsilon: 1.89      # Empirical lower bound (Mahloujifar)
+Loss gap (IN-OUT): -0.0606
+```
+
 **SLURM:**
 ```bash
+# Single epsilon value
 sbatch scripts/run_audit_dpsgd_jax.sh
-EPSILON=4.0 sbatch scripts/run_audit_dpsgd_jax.sh
+
+# With optimized canaries
+CANARY_PATH=optimized_canaries.pt sbatch scripts/run_audit_dpsgd_jax.sh
+```
+
+**Replicate Table 2 (full epsilon sweep):**
+```bash
+# Step 1: Generate optimized canaries first
+sbatch scripts/run_canary_opt.sh
+
+# Step 2: Run DP-SGD audit at ε=8.0 for each canary type
+CANARY_PATH=optimized_canaries.pt sbatch scripts/run_audit_dpsgd_jax.sh
 ```
 
 ## SLURM Cluster Usage
