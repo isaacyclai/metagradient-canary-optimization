@@ -2,7 +2,7 @@
 #SBATCH --job-name=audit_sgd
 #SBATCH --output=logs/audit_sgd_%j.out
 #SBATCH --error=logs/audit_sgd_%j.err
-#SBATCH --time=10
+#SBATCH --time=12:00:00
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=4
