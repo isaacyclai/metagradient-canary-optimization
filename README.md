@@ -29,9 +29,13 @@ uv run python experiments/run_canary_opt.py \
 uv run python experiments/run_audit_sgd.py \
     --steps 100 --eval-interval 50 --num-canaries 50 --seeds 1 --model resnet9
 
-# Test DP-SGD audit (~2-5 min)
+# Test DP-SGD audit with Opacus (~2-5 min)
 uv run python experiments/run_audit_dpsgd.py \
     --epochs 2 --epsilon 8.0 --num-canaries 50 --seeds 1 --model resnet9
+
+# Test DP-SGD audit with JAX (~2-5 min, requires: uv sync --extra jax)
+uv run python experiments/run_audit_dpsgd_jax.py \
+    --epochs 2 --epsilon 8.0 --num-canaries 50 --batch-size 512 --seeds 1
 ```
 
 ## Full Experiments
@@ -89,6 +93,33 @@ uv run python experiments/run_audit_dpsgd.py \
 for eps in 1.0 2.0 4.0 8.0; do
     uv run python experiments/run_audit_dpsgd.py --epsilon $eps --delta 1e-5 --seeds 5
 done
+```
+
+### 4. Audit DP-SGD with JAX (Recommended)
+
+The original paper uses jax-privacy. This version is more memory-efficient and matches the paper.
+
+**First-time setup (on cluster):**
+```bash
+uv sync --extra jax
+```
+
+**Run audit:**
+```bash
+uv run python experiments/run_audit_dpsgd_jax.py \
+    --epsilon 8.0 \
+    --delta 1e-5 \
+    --epochs 100 \
+    --batch-size 4096 \
+    --num-canaries 1000 \
+    --seeds 5 \
+    --canary-path optimized_canaries.pt
+```
+
+**SLURM:**
+```bash
+sbatch scripts/run_audit_dpsgd_jax.sh
+EPSILON=4.0 sbatch scripts/run_audit_dpsgd_jax.sh
 ```
 
 ## SLURM Cluster Usage
