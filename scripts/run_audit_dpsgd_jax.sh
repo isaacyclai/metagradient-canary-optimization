@@ -4,7 +4,7 @@
 #SBATCH --error=logs/dpsgd_jax_%j.err
 #SBATCH --time=24:00:00
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:h100-96:1 -C cuda90
+#SBATCH --gres=gpu:a100-80:1 -C cuda80
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 
