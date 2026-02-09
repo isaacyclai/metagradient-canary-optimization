@@ -195,19 +195,25 @@ def create_dp_train_state(
         momentum: SGD momentum
     
     Returns:
-        Initialized TrainState
+        Initialized TrainState and batch_stats
     """
     dummy_input = jnp.ones((1, 32, 32, 3))
-    variables = model.init(rng, dummy_input, train=False)
+    # Initialize with train=True to populate batch_stats
+    variables = model.init(rng, dummy_input, train=True)
     
     # Use SGD with momentum
     tx = optax.sgd(learning_rate, momentum=momentum)
     
-    return train_state.TrainState.create(
+    state = train_state.TrainState.create(
         apply_fn=model.apply,
         params=variables['params'],
         tx=tx,
-    ), variables.get('batch_stats', {})
+    )
+    
+    # Extract batch_stats (will have initial mean=0, var=1)
+    batch_stats = variables.get('batch_stats', {})
+    
+    return state, batch_stats
 
 
 def per_sample_loss(params, batch_stats, apply_fn, x, y):

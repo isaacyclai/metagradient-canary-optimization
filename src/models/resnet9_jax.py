@@ -79,7 +79,7 @@ def create_resnet9(num_classes: int = 10):
 
 
 def init_resnet9(rng, num_classes: int = 10, input_shape=(1, 32, 32, 3)):
-    """Initialize ResNet-9 model and return (model, params).
+    """Initialize ResNet-9 model and return (model, variables).
     
     Args:
         rng: JAX random key
@@ -87,9 +87,10 @@ def init_resnet9(rng, num_classes: int = 10, input_shape=(1, 32, 32, 3)):
         input_shape: Input shape (batch, height, width, channels)
     
     Returns:
-        Tuple of (model, params)
+        Tuple of (model, variables dict with 'params' and 'batch_stats')
     """
     model = create_resnet9(num_classes)
     dummy_input = jnp.ones(input_shape)
-    variables = model.init(rng, dummy_input, train=False)
+    # Initialize with train=True to populate batch_stats
+    variables = model.init(rng, dummy_input, train=True)
     return model, variables
