@@ -195,10 +195,9 @@ def create_dp_train_state(
         momentum: SGD momentum
     
     Returns:
-        Initialized TrainState and batch_stats
+        Initialized TrainState
     """
     dummy_input = jnp.ones((1, 32, 32, 3))
-    # Initialize with train=True to populate batch_stats
     variables = model.init(rng, dummy_input, train=True)
     
     # Use SGD with momentum
@@ -210,23 +209,19 @@ def create_dp_train_state(
         tx=tx,
     )
     
-    # Extract batch_stats (will have initial mean=0, var=1)
-    batch_stats = variables.get('batch_stats', {})
-    
-    return state, batch_stats
+    return state
 
 
-def per_sample_loss(params, batch_stats, apply_fn, x, y):
+def per_sample_loss(params, apply_fn, x, y):
     """Compute loss for a single sample (for vmap)."""
     # Add batch dimension
     x = jnp.expand_dims(x, 0)
     
     logits = apply_fn(
-        {'params': params, 'batch_stats': batch_stats},
+        {'params': params},
         x,
-        train=True,
-        mutable=['batch_stats']
-    )[0]
+        train=True
+    )
     
     # Cross-entropy loss
     log_probs = jax.nn.log_softmax(logits)
@@ -291,21 +286,19 @@ def clip_and_noise_gradients(
     return averaged_grads
 
 
-@partial(jit, static_argnums=(2, 5, 6))
+@partial(jit, static_argnums=(1, 4, 5))
 def dp_train_step(
     state: train_state.TrainState,
-    batch_stats: Dict,
     apply_fn: Callable,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
     rng: jax.Array,
     max_grad_norm: float,
     noise_multiplier: float
-) -> Tuple[train_state.TrainState, Dict, float]:
+) -> Tuple[train_state.TrainState, float]:
     """Single DP-SGD training step.
     
     Args:
         state: Current training state
-        batch_stats: Batch normalization statistics
         apply_fn: Model apply function
         batch: Tuple of (images, labels)
         rng: JAX random key
@@ -313,7 +306,7 @@ def dp_train_step(
         noise_multiplier: Noise multiplier for DP
     
     Returns:
-        Tuple of (new_state, new_batch_stats, loss)
+        Tuple of (new_state, loss)
     """
     images, labels = batch
     batch_size = images.shape[0]
@@ -322,8 +315,8 @@ def dp_train_step(
     per_sample_grad_fn = grad(per_sample_loss)
     per_sample_grads = vmap(
         per_sample_grad_fn,
-        in_axes=(None, None, None, 0, 0)
-    )(state.params, batch_stats, apply_fn, images, labels)
+        in_axes=(None, None, 0, 0)
+    )(state.params, apply_fn, images, labels)
     
     # Clip and add noise
     rng, noise_rng = random.split(rng)
@@ -340,16 +333,15 @@ def dp_train_step(
     
     # Compute loss for logging (on a subset to save memory)
     sample_logits = apply_fn(
-        {'params': state.params, 'batch_stats': batch_stats},
+        {'params': state.params},
         images[:32],
-        train=False,
-        mutable=False
+        train=False
     )
     sample_loss = optax.softmax_cross_entropy_with_integer_labels(
         sample_logits, labels[:32]
     ).mean()
     
-    return new_state, batch_stats, sample_loss
+    return new_state, sample_loss
 
 
 def train_dpsgd_jax(
@@ -417,7 +409,7 @@ def train_dpsgd_jax(
     
     # Initialize model
     rng, init_rng = random.split(rng)
-    state, batch_stats = create_dp_train_state(init_rng, model, learning_rate)
+    state = create_dp_train_state(init_rng, model, learning_rate)
     
     # Training loop
     losses = []
@@ -435,8 +427,8 @@ def train_dpsgd_jax(
             batch_labels = jnp.array(all_labels[batch_idx])
             
             rng, step_rng = random.split(rng)
-            state, batch_stats, loss = dp_train_step(
-                state, batch_stats, model.apply,
+            state, loss = dp_train_step(
+                state, model.apply,
                 (batch_images, batch_labels),
                 step_rng, max_grad_norm, noise_multiplier
             )
@@ -466,7 +458,6 @@ def train_dpsgd_jax(
 def evaluate_canary_losses(
     model: nn.Module,
     params: Dict,
-    batch_stats: Dict,
     canary_images: np.ndarray,
     canary_labels: np.ndarray,
     in_mask: np.ndarray
@@ -476,7 +467,6 @@ def evaluate_canary_losses(
     Args:
         model: Flax model
         params: Model parameters
-        batch_stats: Batch normalization statistics
         canary_images: All canary images
         canary_labels: All canary labels
         in_mask: Boolean mask for IN canaries
@@ -490,7 +480,7 @@ def evaluate_canary_losses(
     
     # Forward pass
     logits = model.apply(
-        {'params': params, 'batch_stats': batch_stats},
+        {'params': params},
         images,
         train=False
     )

@@ -96,10 +96,8 @@ def run_dp_audit_jax(
     )
     
     # Evaluate canary losses
-    # Need batch stats - for simplicity, use empty dict (model doesn't use running stats in eval)
-    batch_stats = {}
     canary_stats = evaluate_canary_losses(
-        model, params, batch_stats,
+        model, params,
         canary_images, canary_labels, in_mask
     )
     

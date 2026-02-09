@@ -1,6 +1,9 @@
-"""ResNet-9 model in Flax for CIFAR-10.
+"""ResNet-9 model in Flax for CIFAR-10 with DP-SGD support.
 
-Standard ResNet-9 architecture matching the PyTorch version.
+Uses GroupNorm instead of BatchNorm for compatibility with per-sample
+gradient computation (vmap). BatchNorm computes statistics across the
+batch which is incompatible with DP-SGD's per-sample gradient clipping.
+
 Architecture: conv(64) -> conv(128, pool) -> res(128) -> conv(256, pool) -> 
               conv(256, pool) -> res(256) -> pool -> fc(10)
 """
@@ -10,14 +13,18 @@ from flax import linen as nn
 
 
 class ConvBlock(nn.Module):
-    """Convolution block: Conv -> BatchNorm -> ReLU -> optional MaxPool."""
+    """Convolution block: Conv -> GroupNorm -> ReLU -> optional MaxPool."""
     features: int
     pool: bool = False
+    num_groups: int = 8
     
     @nn.compact
     def __call__(self, x, train: bool = True):
         x = nn.Conv(self.features, kernel_size=(3, 3), padding='SAME', use_bias=False)(x)
-        x = nn.BatchNorm(use_running_average=not train)(x)
+        # Use GroupNorm instead of BatchNorm for DP-SGD compatibility
+        # GroupNorm normalizes within each sample, not across the batch
+        num_groups = min(self.num_groups, self.features)
+        x = nn.GroupNorm(num_groups=num_groups)(x)
         x = nn.relu(x)
         if self.pool:
             x = nn.max_pool(x, window_shape=(2, 2), strides=(2, 2))
@@ -27,21 +34,24 @@ class ConvBlock(nn.Module):
 class ResBlock(nn.Module):
     """Residual block: two conv layers with skip connection."""
     features: int
+    num_groups: int = 8
     
     @nn.compact
     def __call__(self, x, train: bool = True):
         residual = x
+        num_groups = min(self.num_groups, self.features)
+        
         x = nn.Conv(self.features, kernel_size=(3, 3), padding='SAME', use_bias=False)(x)
-        x = nn.BatchNorm(use_running_average=not train)(x)
+        x = nn.GroupNorm(num_groups=num_groups)(x)
         x = nn.relu(x)
         x = nn.Conv(self.features, kernel_size=(3, 3), padding='SAME', use_bias=False)(x)
-        x = nn.BatchNorm(use_running_average=not train)(x)
+        x = nn.GroupNorm(num_groups=num_groups)(x)
         x = nn.relu(x + residual)
         return x
 
 
 class ResNet9(nn.Module):
-    """ResNet-9 for CIFAR-10."""
+    """ResNet-9 for CIFAR-10 with GroupNorm (DP-SGD compatible)."""
     num_classes: int = 10
     
     @nn.compact
@@ -74,7 +84,7 @@ class ResNet9(nn.Module):
 
 
 def create_resnet9(num_classes: int = 10):
-    """Create a ResNet-9 model."""
+    """Create a ResNet-9 model with GroupNorm."""
     return ResNet9(num_classes=num_classes)
 
 
@@ -87,10 +97,9 @@ def init_resnet9(rng, num_classes: int = 10, input_shape=(1, 32, 32, 3)):
         input_shape: Input shape (batch, height, width, channels)
     
     Returns:
-        Tuple of (model, variables dict with 'params' and 'batch_stats')
+        Tuple of (model, variables dict with 'params')
     """
     model = create_resnet9(num_classes)
     dummy_input = jnp.ones(input_shape)
-    # Initialize with train=True to populate batch_stats
     variables = model.init(rng, dummy_input, train=True)
     return model, variables
