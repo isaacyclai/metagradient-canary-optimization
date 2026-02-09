@@ -285,7 +285,7 @@ def clip_and_noise_gradients(
     return averaged_grads
 
 
-@partial(jit, static_argnums=(2, 6, 7))
+@partial(jit, static_argnums=(2, 5, 6))
 def dp_train_step(
     state: train_state.TrainState,
     batch_stats: Dict,
