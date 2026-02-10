@@ -356,6 +356,7 @@ def train_dpsgd_jax(
     batch_size: int = 4096,
     learning_rate: float = 0.1,
     max_grad_norm: float = 1.0,
+    noise_multiplier: Optional[float] = None,
     seed: int = 42,
     verbose: bool = True
 ) -> Tuple[Dict, float, Dict]:
@@ -373,6 +374,8 @@ def train_dpsgd_jax(
         batch_size: Batch size
         learning_rate: Learning rate
         max_grad_norm: Maximum gradient norm for clipping
+        noise_multiplier: If provided, use this directly instead of computing
+            from target_epsilon (e.g., paper uses 1.75 with its own accounting)
         seed: Random seed
         verbose: Print progress
     
@@ -393,10 +396,11 @@ def train_dpsgd_jax(
     steps_per_epoch = dataset_size // batch_size
     total_steps = num_epochs * steps_per_epoch
     
-    # Compute noise multiplier for target epsilon
-    noise_multiplier = noise_multiplier_from_epsilon(
-        target_epsilon, total_steps, batch_size, dataset_size, target_delta
-    )
+    # Use provided noise_multiplier or compute from target epsilon
+    if noise_multiplier is None:
+        noise_multiplier = noise_multiplier_from_epsilon(
+            target_epsilon, total_steps, batch_size, dataset_size, target_delta
+        )
     
     if verbose:
         print(f"DP-SGD Training (JAX)")

@@ -158,37 +158,57 @@ def audit_from_losses(
 
 
 # ============================================================================
-# Mahloujifar Auditing (Algorithm 3+4)
+# Mahloujifar Auditing (Algorithm 3+4 from Mahloujifar et al. [MMC24])
 # ============================================================================
 
-def fdp_inverse(y: float, epsilon: float) -> float:
-    """Inverse of f-DP trade-off function."""
-    return y / np.exp(epsilon)
-
-
-def algorithm4_bound(
-    m: int, k: int, k_prime: int, tau: float, epsilon: float, s: int = 2
-) -> bool:
-    """Algorithm 4: Check if k' correct guesses is plausible under epsilon-DP."""
-    if k_prime <= 0:
-        return True
+def _rh_with_cap(inverse_fn, alpha, beta, j, c_cap, k=2):
+    """Mahloujifar recursion with abstention (Algorithm 3 core).
     
-    # Initialize arrays
-    h = np.zeros(k_prime + 1)
-    r = np.zeros(k_prime + 1)
+    Args:
+        inverse_fn: Inverse of f-DP trade-off function f̄⁻¹
+        alpha: Initial r[j] = τ · c / m
+        beta: Initial h[j] = τ · (c_cap - c) / m
+        j: Number of correct guesses (c)
+        c_cap: Total number of guesses
+        k: Alphabet size (2 for binary IN/OUT)
     
-    r[k_prime] = tau * tau / m if m > 0 else tau
-    h[k_prime] = 0
-    
-    # Backward iteration
-    for i in range(k_prime - 1, -1, -1):
-        h[i] = (s - 1) * fdp_inverse(r[i + 1], epsilon)
-        if k > i:
-            r[i] = r[i + 1] + (i / (k - i)) * (h[i] - h[i + 1]) if k != i else r[i + 1]
+    Returns:
+        Tuple of (r, h) arrays
+    """
+    h = [0.0] * (j + 1)
+    r = [0.0] * (j + 1)
+    h[j] = beta
+    r[j] = alpha
+    for i in range(j - 1, -1, -1):
+        h[i] = max(h[i + 1], (k - 1) * inverse_fn(r[i + 1]))
+        if c_cap > i:
+            r[i] = r[i + 1] + (i / (c_cap - i)) * (h[i] - h[i + 1])
         else:
             r[i] = r[i + 1]
+    return r, h
+
+
+def _audit_rh_with_cap(inverse_fn, m, c, c_cap, tau=0.05, k=2):
+    """Algorithm 3: Check if c correct guesses is bounded under f-DP.
     
-    return r[0] + h[0] >= k / m if m > 0 else True
+    Returns True if privacy hypothesis is REJECTED (violation detected),
+    meaning the observation of c correct guesses is unlikely under this f-DP.
+    
+    Args:
+        inverse_fn: f̄⁻¹ for the hypothesized f-DP curve
+        m: Total number of canary pairs
+        c: Number of correct guesses
+        c_cap: Total number of guesses made (≤ m)
+        tau: Probability threshold (default 0.05)
+        k: Alphabet size (2 for binary)
+    """
+    threshold = tau * c_cap / m
+    alpha = threshold * c / c_cap
+    beta = threshold * (c_cap - c) / c_cap
+    r, h = _rh_with_cap(inverse_fn, alpha, beta, c, c_cap, k)
+    # r[0]+h[0] > c_cap/m means contradiction → probability IS bounded
+    # → observation is unlikely → reject hypothesis → privacy violation
+    return r[0] + h[0] > c_cap / m
 
 
 def find_empirical_epsilon_mahloujifar(
@@ -196,30 +216,57 @@ def find_empirical_epsilon_mahloujifar(
     num_guesses: int,
     num_pairs: int,
     tau: float = 0.05,
+    delta: float = 1e-5,
     epsilon_max: float = 20.0
 ) -> float:
-    """Binary search for empirical epsilon using Mahloujifar Algorithm 4."""
+    """Find empirical epsilon using Mahloujifar Algorithm 3 with (ε,δ)-DP.
+    
+    Binary search for the largest ε whose (ε,δ)-DP trade-off function
+    causes Algorithm 3 to reject (detect privacy violation).
+    
+    The (ε,δ)-DP trade-off function inverse is:
+        f̄⁻¹(y) = max(0, (1 - δ - y) / e^ε)
+    
+    Args:
+        num_correct: Number of correct paired guesses (c)
+        num_guesses: Total number of guesses made (c_cap)
+        num_pairs: Total number of canary pairs (m)
+        tau: Probability threshold
+        delta: Privacy parameter δ
+        epsilon_max: Maximum epsilon to search
+    
+    Returns:
+        Empirical epsilon lower bound
+    """
     if num_correct <= num_guesses // 2:
         return 0.0
     
-    def passes_test(eps):
-        return algorithm4_bound(num_pairs, num_guesses, num_correct, tau, eps)
+    def make_inverse(eps):
+        def inv(y):
+            return max(0.0, (1.0 - delta - y) / np.exp(eps))
+        return inv
     
-    eps_low, eps_high = 0.0, epsilon_max
+    def test_rejected(eps):
+        inv_fn = make_inverse(eps)
+        return _audit_rh_with_cap(inv_fn, num_pairs, num_correct, num_guesses, tau)
     
-    if passes_test(eps_high):
-        return epsilon_max
-    if not passes_test(eps_low):
+    # Binary search: find largest eps where test REJECTS
+    # At small eps: f-DP is weak, observation unlikely → rejects (True)
+    # At large eps: f-DP is strong, observation plausible → accepts (False)
+    if not test_rejected(0.0):
         return 0.0
+    if test_rejected(epsilon_max):
+        return epsilon_max
     
-    while eps_high - eps_low > 0.01:
-        eps_mid = (eps_low + eps_high) / 2
-        if passes_test(eps_mid):
-            eps_low = eps_mid
+    eps_lo, eps_hi = 0.0, epsilon_max
+    while eps_hi - eps_lo > 0.001:
+        eps_mid = (eps_lo + eps_hi) / 2
+        if test_rejected(eps_mid):
+            eps_lo = eps_mid
         else:
-            eps_high = eps_mid
+            eps_hi = eps_mid
     
-    return eps_low
+    return eps_lo
 
 
 def audit_mahloujifar_from_losses(
@@ -227,15 +274,29 @@ def audit_mahloujifar_from_losses(
     in_mask: np.ndarray,
     k: int = None,
     tau: float = 0.05,
+    delta: float = 1e-5,
     seed: int = 42
 ) -> dict:
-    """Mahloujifar auditing using paired canary comparison."""
+    """Mahloujifar auditing using paired canary comparison (Algorithm 3+4).
+    
+    Creates random IN/OUT pairs and guesses which was included in training
+    based on the score (negative loss). Uses the full Mahloujifar Algorithm 3
+    recursion with (ε,δ)-DP trade-off functions to compute empirical epsilon.
+    
+    Args:
+        losses: Per-canary loss values
+        in_mask: Boolean mask for IN canaries
+        k: Number of pairs to guess on (default: all pairs)
+        tau: Probability threshold for auditing
+        delta: Privacy parameter δ for (ε,δ)-DP trade-off
+        seed: Random seed for pairing
+    """
     rng = np.random.RandomState(seed)
-    scores = -losses  # Higher = more memorized
+    scores = -losses  # Higher = more memorized (lower loss)
     
     # Create IN/OUT pairs
-    in_indices = np.where(in_mask)[0]
-    out_indices = np.where(~in_mask)[0]
+    in_indices = np.where(in_mask)[0].copy()
+    out_indices = np.where(~in_mask)[0].copy()
     
     rng.shuffle(in_indices)
     rng.shuffle(out_indices)
@@ -244,21 +305,25 @@ def audit_mahloujifar_from_losses(
     pairs = list(zip(in_indices[:num_pairs], out_indices[:num_pairs]))
     
     if k is None:
-        k = max(1, num_pairs // 4)
+        k = num_pairs  # Use all pairs for maximum power
+    k = min(k, num_pairs)
     
-    # Compute score differences for each pair
-    diffs = [abs(scores[in_idx] - scores[out_idx]) for in_idx, out_idx in pairs]
+    # Sort pairs by absolute score difference (most confident first)
+    diffs = np.array([abs(scores[in_idx] - scores[out_idx]) for in_idx, out_idx in pairs])
     sorted_pair_indices = np.argsort(diffs)[::-1]
     
-    # Make guesses on top k pairs (by score difference)
+    # Make guesses on top k pairs
     num_correct = 0
-    for i in range(min(k, len(pairs))):
+    for i in range(k):
         pair_idx = sorted_pair_indices[i]
         in_idx, out_idx = pairs[pair_idx]
+        # Guess: the one with higher score (lower loss) was IN
         if scores[in_idx] > scores[out_idx]:
             num_correct += 1
     
-    emp_epsilon = find_empirical_epsilon_mahloujifar(num_correct, k, num_pairs, tau)
+    emp_epsilon = find_empirical_epsilon_mahloujifar(
+        num_correct, k, num_pairs, tau, delta
+    )
     
     return {
         "mahloujifar_epsilon": emp_epsilon,
@@ -279,6 +344,7 @@ def run_dp_audit_jax(
     num_epochs: int,
     batch_size: int,
     model_name: str = 'wrn16_4',
+    noise_multiplier: float = None,
     seed: int = 42,
     verbose: bool = True
 ) -> dict:
@@ -304,6 +370,7 @@ def run_dp_audit_jax(
         target_delta=target_delta,
         num_epochs=num_epochs,
         batch_size=batch_size,
+        noise_multiplier=noise_multiplier,
         seed=seed,
         verbose=verbose
     )
@@ -350,6 +417,8 @@ def main():
                         help="Model architecture (default: wrn16_4 per paper)")
     parser.add_argument("--seeds", type=int, default=5, help="Number of random seeds")
     parser.add_argument("--data-dir", type=str, default="./data", help="Data directory")
+    parser.add_argument("--noise-multiplier", type=float, default=None,
+                        help="Override noise multiplier (paper uses 1.75). If not set, computed from epsilon.")
     parser.add_argument("--canary-path", type=str, default=None, help="Path to optimized canaries")
     parser.add_argument("--output", type=str, default="results/dpsgd_jax_audit.json", help="Output file")
     args = parser.parse_args()
@@ -360,6 +429,10 @@ def main():
     print(f"JAX devices: {jax.devices()}")
     print(f"Target epsilon: {args.epsilon}")
     print(f"Model: {args.model}")
+    if args.noise_multiplier is not None:
+        print(f"Noise multiplier: {args.noise_multiplier} (override)")
+    else:
+        print(f"Noise multiplier: auto (computed from epsilon)")
     print(f"Batch size: {args.batch_size}")
     print(f"Epochs: {args.epochs}")
     print(f"Seeds: {args.seeds}")
@@ -427,6 +500,7 @@ def main():
                 num_epochs=args.epochs,
                 batch_size=args.batch_size,
                 model_name=args.model,
+                noise_multiplier=args.noise_multiplier,
                 seed=seed,
                 verbose=True
             )

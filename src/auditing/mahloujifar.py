@@ -138,61 +138,28 @@ def fdp_function(x: float, epsilon: float) -> float:
     return np.exp(epsilon) * x
 
 
-def fdp_inverse(y: float, epsilon: float) -> float:
-    """Inverse of fdp_function."""
-    return y / np.exp(epsilon)
-
-
-def algorithm4_bound(
-    m: int,  # Number of pairs
-    k: int,  # Number of guesses
-    k_prime: int,  # Number of correct guesses
-    tau: float,  # Probability threshold
-    epsilon: float,
-    delta: float = 0.0,
-    s: int = 2  # Alphabet size (2 for binary IN vs OUT)
-) -> bool:
-    """Algorithm 4: Upper bound probability of correct guesses.
-    
-    Returns True if the probability of making k' correct guesses
-    (out of k) is less than tau under the given f-DP function.
-    
-    Args:
-        m: Total number of canary pairs
-        k: Number of guesses made
-        k_prime: Number of correct guesses
-        tau: Probability threshold
-        epsilon: Privacy parameter
-        delta: Privacy parameter (default 0 for GDP)
-        s: Alphabet size
-    
-    Returns:
-        True if probability of k' correct guesses is bounded by tau
-    """
-    if k_prime <= 0:
-        return True
-    
-    # Constants from Algorithm 4
-    c = tau  # Simplified
-    c_prime = tau
-    
-    # Initialize arrays
-    h = np.zeros(k_prime + 1)
-    r = np.zeros(k_prime + 1)
-    
-    r[k_prime] = tau * c / m if m > 0 else tau
-    h[k_prime] = tau * (c_prime - c) / m if m > 0 else 0
-    
-    # Backward iteration
-    for i in range(k_prime - 1, -1, -1):
-        h[i] = (s - 1) * fdp_inverse(r[i + 1], epsilon)
-        if k > i:
-            r[i] = r[i + 1] + (i / (k - i)) * (h[i] - h[i + 1]) if k != i else r[i + 1]
+def _rh_with_cap(inverse_fn, alpha, beta, j, c_cap, k=2):
+    """Mahloujifar recursion with abstention (Algorithm 3 core)."""
+    h = [0.0] * (j + 1)
+    r = [0.0] * (j + 1)
+    h[j] = beta
+    r[j] = alpha
+    for i in range(j - 1, -1, -1):
+        h[i] = max(h[i + 1], (k - 1) * inverse_fn(r[i + 1]))
+        if c_cap > i:
+            r[i] = r[i + 1] + (i / (c_cap - i)) * (h[i] - h[i + 1])
         else:
             r[i] = r[i + 1]
-    
-    # Check condition
-    return r[0] + h[0] >= k / m if m > 0 else True
+    return r, h
+
+
+def _audit_rh_with_cap(inverse_fn, m, c, c_cap, tau=0.05, k=2):
+    """Algorithm 3: Returns True if privacy hypothesis REJECTED."""
+    threshold = tau * c_cap / m
+    alpha = threshold * c / c_cap
+    beta = threshold * (c_cap - c) / c_cap
+    r, h = _rh_with_cap(inverse_fn, alpha, beta, c, c_cap, k)
+    return r[0] + h[0] > c_cap / m
 
 
 def find_empirical_epsilon_mahloujifar(
@@ -203,14 +170,17 @@ def find_empirical_epsilon_mahloujifar(
     delta: float = 1e-5,
     epsilon_max: float = 20.0
 ) -> float:
-    """Binary search for the largest ε satisfying Algorithm 4.
+    """Find empirical epsilon using Mahloujifar Algorithm 3 with (ε,δ)-DP.
+    
+    Uses the full Algorithm 3 recursion with (ε,δ)-DP trade-off function:
+        f̄⁻¹(y) = max(0, (1 - δ - y) / e^ε)
     
     Args:
-        num_correct: Number of correct guesses
-        num_guesses: Number of guesses made
-        num_pairs: Total number of canary pairs
+        num_correct: Number of correct paired guesses (c)
+        num_guesses: Total number of guesses made (c_cap)
+        num_pairs: Total number of canary pairs (m)
         tau: Probability threshold
-        delta: Privacy parameter
+        delta: Privacy parameter δ
         epsilon_max: Maximum epsilon to search
     
     Returns:
@@ -219,27 +189,29 @@ def find_empirical_epsilon_mahloujifar(
     if num_correct <= num_guesses // 2:
         return 0.0
     
-    def passes_test(eps):
-        return algorithm4_bound(num_pairs, num_guesses, num_correct, tau, eps, delta)
+    def make_inverse(eps):
+        def inv(y):
+            return max(0.0, (1.0 - delta - y) / np.exp(eps))
+        return inv
     
-    # Binary search for largest epsilon where test passes
-    eps_low, eps_high = 0.0, epsilon_max
+    def test_rejected(eps):
+        inv_fn = make_inverse(eps)
+        return _audit_rh_with_cap(inv_fn, num_pairs, num_correct, num_guesses, tau)
     
-    # Check boundaries
-    if passes_test(eps_high):
-        return epsilon_max
-    if not passes_test(eps_low):
+    if not test_rejected(0.0):
         return 0.0
+    if test_rejected(epsilon_max):
+        return epsilon_max
     
-    # Binary search
-    while eps_high - eps_low > 0.01:
-        eps_mid = (eps_low + eps_high) / 2
-        if passes_test(eps_mid):
-            eps_low = eps_mid
+    eps_lo, eps_hi = 0.0, epsilon_max
+    while eps_hi - eps_lo > 0.001:
+        eps_mid = (eps_lo + eps_hi) / 2
+        if test_rejected(eps_mid):
+            eps_lo = eps_mid
         else:
-            eps_high = eps_mid
+            eps_hi = eps_mid
     
-    return eps_low
+    return eps_lo
 
 
 def audit_mahloujifar(

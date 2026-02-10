@@ -22,7 +22,6 @@ from src.utils import set_seed, get_device, load_canaries
 
 def run_dp_experiment(
     canary_type: str,
-    canary_dataset,
     train_loader,
     target_epsilon: float,
     target_delta: float,
