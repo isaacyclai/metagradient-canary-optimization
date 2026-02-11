@@ -344,6 +344,7 @@ def run_dp_audit_jax(
     batch_size: int,
     model_name: str = 'wrn16_4',
     noise_multiplier: float = None,
+    aug_multiplicity: int = 0,
     seed: int = 42,
     verbose: bool = True
 ) -> dict:
@@ -370,6 +371,7 @@ def run_dp_audit_jax(
         num_epochs=num_epochs,
         batch_size=batch_size,
         noise_multiplier=noise_multiplier,
+        aug_multiplicity=aug_multiplicity,
         seed=seed,
         verbose=verbose
     )
@@ -419,6 +421,9 @@ def main():
     parser.add_argument("--noise-multiplier", type=float, default=None,
                         help="Override noise multiplier (paper uses 1.75). If not set, computed from epsilon.")
     parser.add_argument("--canary-path", type=str, default=None, help="Path to optimized canaries")
+    parser.add_argument("--aug-multiplicity", type=int, default=0,
+                        help="Augmentation multiplicity K (0=none, 16=paper default). "
+                             "Averages gradients over K augmented copies before clipping.")
     parser.add_argument("--output", type=str, default="results/dpsgd_jax_audit.json", help="Output file")
     args = parser.parse_args()
     
@@ -435,6 +440,8 @@ def main():
     print(f"Batch size: {args.batch_size}")
     print(f"Epochs: {args.epochs}")
     print(f"Seeds: {args.seeds}")
+    if args.aug_multiplicity > 0:
+        print(f"Aug multiplicity: {args.aug_multiplicity}")
     print("=" * 60)
     
     # Load CIFAR-10
@@ -500,6 +507,7 @@ def main():
                 batch_size=args.batch_size,
                 model_name=args.model,
                 noise_multiplier=args.noise_multiplier,
+                aug_multiplicity=args.aug_multiplicity,
                 seed=seed,
                 verbose=True
             )

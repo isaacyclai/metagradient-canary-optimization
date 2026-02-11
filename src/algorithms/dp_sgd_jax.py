@@ -212,6 +212,39 @@ def create_dp_train_state(
     return state
 
 
+def augment_image(rng, image):
+    """Apply random augmentation to a single image (NHWC format).
+    
+    Applies random horizontal flip and random crop with 4px padding,
+    matching the standard CIFAR-10 augmentation used in DP-SGD literature
+    (De et al. 2022, "Unlocking High-Accuracy DP Image Classification").
+    
+    Args:
+        rng: JAX random key
+        image: Single image array of shape (H, W, C)
+    
+    Returns:
+        Augmented image of same shape
+    """
+    rng_flip, rng_crop = random.split(rng)
+    
+    # Random horizontal flip
+    flip = random.bernoulli(rng_flip)
+    image = jnp.where(flip, jnp.flip(image, axis=1), image)
+    
+    # Random crop: pad 4 pixels on each side, then crop back to original size
+    h, w, c = image.shape[0], image.shape[1], image.shape[2]
+    padded = jnp.pad(image, ((4, 4), (4, 4), (0, 0)), mode='reflect')
+    
+    crop_y = random.randint(rng_crop, (), 0, 9)  # 0..8 inclusive for 40->32
+    rng_x = random.fold_in(rng_crop, 1)
+    crop_x = random.randint(rng_x, (), 0, 9)
+    
+    image = jax.lax.dynamic_slice(padded, (crop_y, crop_x, 0), (h, w, c))
+    
+    return image
+
+
 def per_sample_loss(params, apply_fn, x, y):
     """Compute loss for a single sample (for vmap)."""
     # Add batch dimension
@@ -226,6 +259,37 @@ def per_sample_loss(params, apply_fn, x, y):
     # Cross-entropy loss
     log_probs = jax.nn.log_softmax(logits)
     return -log_probs[0, y]
+
+
+def per_sample_loss_augmented(params, apply_fn, x, y, rng, aug_mult):
+    """Compute average loss over aug_mult augmented versions of a single sample.
+    
+    Implements augmentation multiplicity from De et al. 2022:
+    for each sample, compute loss on K augmented copies and average.
+    Taking grad() of this gives the averaged gradient, which is then
+    clipped — improving signal-to-noise ratio at zero privacy cost.
+    
+    Args:
+        params: Model parameters
+        apply_fn: Model apply function
+        x: Single image (H, W, C)
+        y: Label (scalar)
+        rng: JAX random key
+        aug_mult: Number of augmented copies (K)
+    
+    Returns:
+        Average loss over K augmented copies
+    """
+    # Generate K different random keys for augmentations
+    rngs = random.split(rng, aug_mult)
+    # Create K copies and augment each differently
+    x_copies = jnp.broadcast_to(x, (aug_mult,) + x.shape)
+    augmented = vmap(augment_image)(rngs, x_copies)
+    # Compute loss for each augmented copy
+    losses = vmap(
+        lambda xi: per_sample_loss(params, apply_fn, xi, y)
+    )(augmented)
+    return jnp.mean(losses)
 
 
 def clip_and_noise_gradients(
@@ -286,14 +350,15 @@ def clip_and_noise_gradients(
     return averaged_grads
 
 
-@partial(jit, static_argnums=(1, 4, 5))
+@partial(jit, static_argnums=(1, 4, 5, 6))
 def dp_train_step(
     state: train_state.TrainState,
     apply_fn: Callable,
     batch: Tuple[jnp.ndarray, jnp.ndarray],
     rng: jax.Array,
     max_grad_norm: float,
-    noise_multiplier: float
+    noise_multiplier: float,
+    aug_multiplicity: int = 0
 ) -> Tuple[train_state.TrainState, float]:
     """Single DP-SGD training step.
     
@@ -304,6 +369,7 @@ def dp_train_step(
         rng: JAX random key
         max_grad_norm: Maximum gradient norm for clipping
         noise_multiplier: Noise multiplier for DP
+        aug_multiplicity: Number of augmented copies per sample (0 = no augmentation)
     
     Returns:
         Tuple of (new_state, loss)
@@ -311,12 +377,24 @@ def dp_train_step(
     images, labels = batch
     batch_size = images.shape[0]
     
-    # Compute per-sample gradients using vmap
-    per_sample_grad_fn = grad(per_sample_loss)
-    per_sample_grads = vmap(
-        per_sample_grad_fn,
-        in_axes=(None, None, 0, 0)
-    )(state.params, apply_fn, images, labels)
+    if aug_multiplicity and aug_multiplicity > 0:
+        # Augmentation multiplicity: compute averaged gradient over K augmented
+        # copies per sample before clipping (De et al. 2022)
+        rng, aug_rng = random.split(rng)
+        aug_rngs = random.split(aug_rng, batch_size)  # One key per sample
+        
+        per_sample_grad_fn = grad(per_sample_loss_augmented)
+        per_sample_grads = vmap(
+            per_sample_grad_fn,
+            in_axes=(None, None, 0, 0, 0, None)
+        )(state.params, apply_fn, images, labels, aug_rngs, aug_multiplicity)
+    else:
+        # Standard: no augmentation
+        per_sample_grad_fn = grad(per_sample_loss)
+        per_sample_grads = vmap(
+            per_sample_grad_fn,
+            in_axes=(None, None, 0, 0)
+        )(state.params, apply_fn, images, labels)
     
     # Clip and add noise
     rng, noise_rng = random.split(rng)
@@ -357,6 +435,7 @@ def train_dpsgd_jax(
     learning_rate: float = 0.1,
     max_grad_norm: float = 1.0,
     noise_multiplier: Optional[float] = None,
+    aug_multiplicity: int = 0,
     seed: int = 42,
     verbose: bool = True
 ) -> Tuple[Dict, float, Dict]:
@@ -376,6 +455,9 @@ def train_dpsgd_jax(
         max_grad_norm: Maximum gradient norm for clipping
         noise_multiplier: If provided, use this directly instead of computing
             from target_epsilon (e.g., paper uses 1.75 with its own accounting)
+        aug_multiplicity: Number of augmented copies per sample (0 = no augmentation,
+            16 = paper default). Averages gradients over K augmented copies before
+            clipping, improving signal-to-noise ratio at zero privacy cost.
         seed: Random seed
         verbose: Print progress
     
@@ -410,6 +492,8 @@ def train_dpsgd_jax(
         print(f"  Steps: {total_steps}")
         print(f"  Target epsilon: {target_epsilon}")
         print(f"  Noise multiplier: {noise_multiplier:.4f}")
+        if aug_multiplicity and aug_multiplicity > 0:
+            print(f"  Aug multiplicity: {aug_multiplicity}")
     
     # Initialize model
     rng, init_rng = random.split(rng)
@@ -434,7 +518,8 @@ def train_dpsgd_jax(
             state, loss = dp_train_step(
                 state, model.apply,
                 (batch_images, batch_labels),
-                step_rng, max_grad_norm, noise_multiplier
+                step_rng, max_grad_norm, noise_multiplier,
+                aug_multiplicity
             )
             epoch_loss += loss
         
