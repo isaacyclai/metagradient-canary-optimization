@@ -1,5 +1,5 @@
 """
-Run DP-SGD privacy audit using JAX/
+Run DP-SGD privacy audit using JAX
 """
 
 import argparse
@@ -15,6 +15,8 @@ from scipy.optimize import brentq
 import jax
 import jax.numpy as jnp
 import optax
+import torchvision
+import torchvision.transforms as transforms
 
 from src.models.resnet9_jax import create_resnet9
 from src.models.wrn_jax import create_wrn16_4
@@ -33,9 +35,6 @@ def get_model(model_name: str, num_classes: int = 10):
 
 def load_cifar10_numpy(data_dir: str = "./data"):
     """Load CIFAR-10 as numpy arrays (NHWC format for JAX)."""
-    import torchvision
-    import torchvision.transforms as transforms
-    
     # Load without transforms
     train_dataset = torchvision.datasets.CIFAR10(
         root=data_dir, train=True, download=True
