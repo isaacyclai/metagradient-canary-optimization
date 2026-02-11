@@ -44,6 +44,7 @@ SEEDS="${SEEDS:-5}"
 DATA_DIR="${DATA_DIR:-./data}"
 CANARY_PATH="${CANARY_PATH:-}"
 AUG_MULT="${AUG_MULT:-16}"
+GRAD_ACC_STEPS="${GRAD_ACC_STEPS:-8}"
 OUTPUT="${OUTPUT:-results/dpsgd_jax_eps${EPSILON}_${SLURM_JOB_ID}.json}"
 
 echo "=============================================="
@@ -63,6 +64,7 @@ echo "  Batch size: $BATCH_SIZE"
 echo "  Num canaries: $NUM_CANARIES"
 echo "  Seeds: $SEEDS"
 echo "  Aug multiplicity: $AUG_MULT"
+echo "  Grad accumulation steps: $GRAD_ACC_STEPS"
 echo "Output: $OUTPUT"
 echo "=============================================="
 
@@ -80,6 +82,7 @@ CMD="uv run experiments/run_audit_dpsgd_jax.py \
     --seeds $SEEDS \
     --data-dir $DATA_DIR \
     --aug-multiplicity $AUG_MULT \
+    --gradient-accumulation-steps $GRAD_ACC_STEPS \
     --output $OUTPUT"
 
 # Add noise multiplier if specified

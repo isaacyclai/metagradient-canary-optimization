@@ -292,46 +292,59 @@ def per_sample_loss_augmented(params, apply_fn, x, y, rng, aug_mult):
     return jnp.mean(losses)
 
 
-def clip_and_noise_gradients(
+def _clip_single_grad(g, max_grad_norm):
+    """Clip a single sample's gradients to max_grad_norm."""
+    flat_grads = jax.tree_util.tree_leaves(g)
+    total_norm = jnp.sqrt(sum(jnp.sum(x**2) for x in flat_grads))
+    clip_factor = jnp.minimum(1.0, max_grad_norm / (total_norm + 1e-10))
+    return jax.tree_util.tree_map(lambda x: x * clip_factor, g)
+
+
+def clip_and_sum_gradients(
     grads: Dict,
+    max_grad_norm: float,
+) -> Dict:
+    """Clip per-sample gradients and sum them (no noise).
+    
+    Used for gradient accumulation: process micro-batches independently,
+    sum the clipped gradients, then add noise once.
+    
+    Args:
+        grads: Per-sample gradients (leading batch dimension)
+        max_grad_norm: Maximum L2 norm for clipping
+    
+    Returns:
+        Sum of clipped per-sample gradients
+    """
+    clipped_grads = jax.vmap(
+        lambda g: _clip_single_grad(g, max_grad_norm)
+    )(grads)
+    return jax.tree_util.tree_map(lambda x: jnp.sum(x, axis=0), clipped_grads)
+
+
+def noise_and_average_gradients(
+    summed_grads: Dict,
     max_grad_norm: float,
     noise_multiplier: float,
     rng: jax.Array,
     batch_size: int
 ) -> Dict:
-    """Clip per-sample gradients and add Gaussian noise.
+    """Add Gaussian noise to summed gradients and average.
     
     Args:
-        grads: Per-sample gradients (leading batch dimension)
-        max_grad_norm: Maximum L2 norm for clipping
+        summed_grads: Sum of clipped per-sample gradients
+        max_grad_norm: Maximum gradient norm (for noise calibration)
         noise_multiplier: Noise multiplier (sigma)
         rng: JAX random key
-        batch_size: Batch size
+        batch_size: Total batch size (for averaging)
     
     Returns:
-        Clipped and noised gradients (aggregated)
+        Noised and averaged gradients
     """
-    def clip_single(g):
-        """Clip a single sample's gradients."""
-        # Flatten all gradients for this sample
-        flat_grads = jax.tree_util.tree_leaves(g)
-        total_norm = jnp.sqrt(sum(jnp.sum(x**2) for x in flat_grads))
-        clip_factor = jnp.minimum(1.0, max_grad_norm / (total_norm + 1e-10))
-        return jax.tree_util.tree_map(lambda x: x * clip_factor, g)
-    
-    # Clip each sample's gradients
-    clipped_grads = jax.vmap(clip_single)(grads)
-    
-    # Sum clipped gradients
-    summed_grads = jax.tree_util.tree_map(lambda x: jnp.sum(x, axis=0), clipped_grads)
-    
-    # Add Gaussian noise
     def add_noise(g, key):
         noise_std = max_grad_norm * noise_multiplier
-        noise = random.normal(key, g.shape) * noise_std
-        return g + noise
+        return g + random.normal(key, g.shape) * noise_std
     
-    # Generate noise keys for each gradient tensor
     num_leaves = len(jax.tree_util.tree_leaves(summed_grads))
     noise_keys = random.split(rng, num_leaves)
     
@@ -343,11 +356,67 @@ def clip_and_noise_gradients(
             list(noise_keys)
         )
     )
+    return jax.tree_util.tree_map(lambda x: x / batch_size, noised_grads)
+
+
+def clip_and_noise_gradients(
+    grads: Dict,
+    max_grad_norm: float,
+    noise_multiplier: float,
+    rng: jax.Array,
+    batch_size: int
+) -> Dict:
+    """Clip per-sample gradients, add Gaussian noise, and average.
     
-    # Average gradients
-    averaged_grads = jax.tree_util.tree_map(lambda x: x / batch_size, noised_grads)
+    Convenience wrapper combining clip_and_sum_gradients + noise_and_average_gradients.
+    """
+    summed = clip_and_sum_gradients(grads, max_grad_norm)
+    return noise_and_average_gradients(summed, max_grad_norm, noise_multiplier, rng, batch_size)
+
+
+@partial(jit, static_argnums=(1, 4, 5))
+def _compute_micro_batch_clipped_sum(
+    params: Dict,
+    apply_fn: Callable,
+    batch: Tuple[jnp.ndarray, jnp.ndarray],
+    rng: jax.Array,
+    max_grad_norm: float,
+    aug_multiplicity: int = 0
+) -> Dict:
+    """Process a micro-batch: compute per-sample gradients, clip, and sum.
     
-    return averaged_grads
+    Used for gradient accumulation. Each micro-batch produces a sum of
+    clipped per-sample gradients that can be accumulated across micro-batches.
+    
+    Args:
+        params: Model parameters
+        apply_fn: Model apply function
+        batch: Tuple of (images, labels)
+        rng: JAX random key
+        max_grad_norm: Maximum gradient norm for clipping
+        aug_multiplicity: Number of augmented copies (0 = no augmentation)
+    
+    Returns:
+        Sum of clipped per-sample gradients for this micro-batch
+    """
+    images, labels = batch
+    
+    if aug_multiplicity and aug_multiplicity > 0:
+        rng, aug_rng = random.split(rng)
+        aug_rngs = random.split(aug_rng, images.shape[0])
+        per_sample_grad_fn = grad(per_sample_loss_augmented)
+        per_sample_grads = vmap(
+            per_sample_grad_fn,
+            in_axes=(None, None, 0, 0, 0, None)
+        )(params, apply_fn, images, labels, aug_rngs, aug_multiplicity)
+    else:
+        per_sample_grad_fn = grad(per_sample_loss)
+        per_sample_grads = vmap(
+            per_sample_grad_fn,
+            in_axes=(None, None, 0, 0)
+        )(params, apply_fn, images, labels)
+    
+    return clip_and_sum_gradients(per_sample_grads, max_grad_norm)
 
 
 @partial(jit, static_argnums=(1, 4, 5, 6))
@@ -436,6 +505,7 @@ def train_dpsgd_jax(
     max_grad_norm: float = 1.0,
     noise_multiplier: Optional[float] = None,
     aug_multiplicity: int = 0,
+    gradient_accumulation_steps: int = 1,
     seed: int = 42,
     verbose: bool = True
 ) -> Tuple[Dict, float, Dict]:
@@ -458,6 +528,9 @@ def train_dpsgd_jax(
         aug_multiplicity: Number of augmented copies per sample (0 = no augmentation,
             16 = paper default). Averages gradients over K augmented copies before
             clipping, improving signal-to-noise ratio at zero privacy cost.
+        gradient_accumulation_steps: Number of micro-batches to split each batch into.
+            Reduces peak GPU memory by processing smaller chunks. Must evenly divide
+            batch_size. Privacy guarantee is unchanged.
         seed: Random seed
         verbose: Print progress
     
@@ -494,6 +567,9 @@ def train_dpsgd_jax(
         print(f"  Noise multiplier: {noise_multiplier:.4f}")
         if aug_multiplicity and aug_multiplicity > 0:
             print(f"  Aug multiplicity: {aug_multiplicity}")
+        if gradient_accumulation_steps > 1:
+            print(f"  Grad accumulation steps: {gradient_accumulation_steps}")
+            print(f"  Micro-batch size: {batch_size // gradient_accumulation_steps}")
     
     # Initialize model
     rng, init_rng = random.split(rng)
@@ -514,13 +590,59 @@ def train_dpsgd_jax(
             batch_images = jnp.array(all_images[batch_idx])
             batch_labels = jnp.array(all_labels[batch_idx])
             
-            rng, step_rng = random.split(rng)
-            state, loss = dp_train_step(
-                state, model.apply,
-                (batch_images, batch_labels),
-                step_rng, max_grad_norm, noise_multiplier,
-                aug_multiplicity
-            )
+            if gradient_accumulation_steps > 1:
+                # Gradient accumulation: process micro-batches, accumulate
+                # clipped gradient sums, then add noise once
+                micro_batch_size = batch_size // gradient_accumulation_steps
+                accumulated_grads = None
+                
+                for mb_idx in range(gradient_accumulation_steps):
+                    mb_start = mb_idx * micro_batch_size
+                    mb_end = mb_start + micro_batch_size
+                    mb_images = batch_images[mb_start:mb_end]
+                    mb_labels = batch_labels[mb_start:mb_end]
+                    
+                    rng, mb_rng = random.split(rng)
+                    clipped_sum = _compute_micro_batch_clipped_sum(
+                        state.params, model.apply,
+                        (mb_images, mb_labels),
+                        mb_rng, max_grad_norm, aug_multiplicity
+                    )
+                    
+                    if accumulated_grads is None:
+                        accumulated_grads = clipped_sum
+                    else:
+                        accumulated_grads = jax.tree_util.tree_map(
+                            lambda a, b: a + b,
+                            accumulated_grads, clipped_sum
+                        )
+                
+                # Add noise once and average over full batch
+                rng, noise_rng = random.split(rng)
+                dp_grads = noise_and_average_gradients(
+                    accumulated_grads, max_grad_norm,
+                    noise_multiplier, noise_rng, batch_size
+                )
+                state = state.apply_gradients(grads=dp_grads)
+                
+                # Compute loss for logging
+                sample_logits = model.apply(
+                    {'params': state.params},
+                    batch_images[:32],
+                    train=False
+                )
+                loss = optax.softmax_cross_entropy_with_integer_labels(
+                    sample_logits, batch_labels[:32]
+                ).mean()
+            else:
+                # Standard single-step path (no accumulation)
+                rng, step_rng = random.split(rng)
+                state, loss = dp_train_step(
+                    state, model.apply,
+                    (batch_images, batch_labels),
+                    step_rng, max_grad_norm, noise_multiplier,
+                    aug_multiplicity
+                )
             epoch_loss += loss
         
         avg_loss = epoch_loss / steps_per_epoch

@@ -345,6 +345,7 @@ def run_dp_audit_jax(
     model_name: str = 'wrn16_4',
     noise_multiplier: float = None,
     aug_multiplicity: int = 0,
+    gradient_accumulation_steps: int = 1,
     seed: int = 42,
     verbose: bool = True
 ) -> dict:
@@ -372,6 +373,7 @@ def run_dp_audit_jax(
         batch_size=batch_size,
         noise_multiplier=noise_multiplier,
         aug_multiplicity=aug_multiplicity,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         seed=seed,
         verbose=verbose
     )
@@ -424,6 +426,9 @@ def main():
     parser.add_argument("--aug-multiplicity", type=int, default=0,
                         help="Augmentation multiplicity K (0=none, 16=paper default). "
                              "Averages gradients over K augmented copies before clipping.")
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1,
+                        help="Number of micro-batches per step for gradient accumulation. "
+                             "Reduces GPU memory. Must evenly divide batch size.")
     parser.add_argument("--output", type=str, default="results/dpsgd_jax_audit.json", help="Output file")
     args = parser.parse_args()
     
@@ -442,6 +447,8 @@ def main():
     print(f"Seeds: {args.seeds}")
     if args.aug_multiplicity > 0:
         print(f"Aug multiplicity: {args.aug_multiplicity}")
+    if args.gradient_accumulation_steps > 1:
+        print(f"Grad accumulation steps: {args.gradient_accumulation_steps}")
     print("=" * 60)
     
     # Load CIFAR-10
@@ -508,6 +515,7 @@ def main():
                 model_name=args.model,
                 noise_multiplier=args.noise_multiplier,
                 aug_multiplicity=args.aug_multiplicity,
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
                 seed=seed,
                 verbose=True
             )
