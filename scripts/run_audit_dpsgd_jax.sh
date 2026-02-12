@@ -35,7 +35,7 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 # Default parameters (can be overridden by environment variables)
 EPSILON="${EPSILON:-8.0}"
 DELTA="${DELTA:-1e-5}"
-EPOCHS="${EPOCHS:-100}"
+EPOCHS="${EPOCHS:-850}"
 NUM_CANARIES="${NUM_CANARIES:-1000}"
 BATCH_SIZE="${BATCH_SIZE:-4096}"
 MODEL="${MODEL:-wrn16_4}"

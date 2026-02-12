@@ -425,7 +425,7 @@ def train_dpsgd_jax(
     in_mask: np.ndarray,
     target_epsilon: float,
     target_delta: float = 1e-5,
-    num_epochs: int = 100,
+    num_epochs: int = 850,
     batch_size: int = 4096,
     learning_rate: float = 0.4,
     max_grad_norm: float = 1.0,

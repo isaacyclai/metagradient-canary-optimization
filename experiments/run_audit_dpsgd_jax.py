@@ -43,11 +43,11 @@ def load_cifar10_numpy(data_dir: str = "./data"):
         root=data_dir, train=False, download=True
     )
     
-    # Convert to numpy, normalize to [0, 1]
-    train_images = train_dataset.data.astype(np.float32) / 255.0
+    # Convert to numpy, normalize to [-1, 1] per De et al. 2022
+    train_images = (train_dataset.data.astype(np.float32) / 127.5) - 1.0
     train_labels = np.array(train_dataset.targets)
     
-    test_images = test_dataset.data.astype(np.float32) / 255.0
+    test_images = (test_dataset.data.astype(np.float32) / 127.5) - 1.0
     test_labels = np.array(test_dataset.targets)
     
     return (train_images, train_labels), (test_images, test_labels)
@@ -339,9 +339,9 @@ def run_dp_audit_jax(
     canary_labels: np.ndarray,
     train_data: tuple,
     target_epsilon: float,
-    target_delta: float,
-    num_epochs: int,
-    batch_size: int,
+    target_delta: float = 1e-5,
+    num_epochs: int = 850,
+    batch_size: int = 4096,
     model_name: str = 'wrn16_4',
     noise_multiplier: float = None,
     learning_rate: float = 0.4,
@@ -417,7 +417,7 @@ def main():
     parser = argparse.ArgumentParser(description="Audit DP-SGD with JAX (paper-faithful)")
     parser.add_argument("--epsilon", type=float, default=8.0, help="Target epsilon")
     parser.add_argument("--delta", type=float, default=1e-5, help="Target delta")
-    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=850, help="Number of training epochs")
     parser.add_argument("--num-canaries", type=int, default=1000, help="Number of canaries")
     parser.add_argument("--batch-size", type=int, default=4096, help="Batch size")
     parser.add_argument("--model", type=str, default="wrn16_4", choices=["wrn16_4", "resnet9"],
@@ -494,8 +494,14 @@ def main():
         opt_labels = optimized["labels"].numpy()
         
         # Convert from PyTorch NCHW to JAX NHWC format
+        # Convert from PyTorch NCHW to JAX NHWC format
         if opt_images.shape[1] == 3:  # NCHW format
             opt_images = np.transpose(opt_images, (0, 2, 3, 1))
+            
+        # Normalize to [-1, 1] if currently in [0, 1] (heuristic check)
+        if opt_images.min() >= 0.0 and opt_images.max() <= 1.0:
+            print("Normalizing optimized canaries from [0, 1] to [-1, 1]...")
+            opt_images = (opt_images - 0.5) / 0.5
         
         canary_configs["metagradient"] = (opt_images, opt_labels)
         print(f"Loaded optimized canaries from {args.canary_path}")
