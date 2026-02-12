@@ -19,83 +19,10 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 
-
-def compute_rdp_subsampled_gaussian(q: float, sigma: float, alpha: float) -> float:
-    """Compute RDP for a single step of subsampled Gaussian mechanism.
-    
-    Uses the analytical bound from Mironov 2017 "Rényi Differential Privacy".
-    For subsampling rate q and noise multiplier sigma.
-    
-    Args:
-        q: Subsampling rate (batch_size / dataset_size)
-        sigma: Noise multiplier
-        alpha: RDP order
-    
-    Returns:
-        RDP value for a single step
-    """
-    if sigma == 0:
-        return float('inf')
-    if q == 0:
-        return 0.0
-    if alpha <= 1:
-        return 0.0
-    
-    # For small q, use the binomial bound (Mironov 2017, Theorem 9)
-    # This is the standard approach used by Opacus and TensorFlow Privacy
-    
-    # The tight bound for subsampled Gaussian comes from:
-    # Mironov, I. "Rényi Differential Privacy" (2017)
-    # Wang, Y. et al. "Subsampled Rényi Differential Privacy..." (2019)
-    
-    def log1mexp(x):
-        """Compute log(1 - exp(x)) stably for x < 0."""
-        if x < -1:
-            return np.log1p(-np.exp(x))
-        else:
-            return np.log(-np.expm1(x))
-    
-    # For integer orders, use the closed-form bound
-    if isinstance(alpha, int) or alpha == int(alpha):
-        alpha = int(alpha)
-        
-        # Compute log of terms in the RDP sum
-        log_terms = []
-        for k in range(alpha + 1):
-            # Binomial coefficient
-            log_binom = (
-                np.sum(np.log(np.arange(1, alpha + 1))) -
-                np.sum(np.log(np.arange(1, k + 1))) -
-                np.sum(np.log(np.arange(1, alpha - k + 1)))
-            ) if k > 0 and k < alpha else 0.0
-            
-            # (1-q)^(alpha-k) * q^k
-            if 1 - q > 0 and q > 0:
-                log_q_term = (alpha - k) * np.log(1 - q) + k * np.log(q)
-            elif q == 1:
-                log_q_term = 0.0 if k == alpha else -float('inf')
-            else:  # q == 0
-                log_q_term = 0.0 if k == 0 else -float('inf')
-            
-            # exp(k(k-1)/(2*sigma^2))
-            log_exp_term = k * (k - 1) / (2 * sigma**2)
-            
-            log_terms.append(log_binom + log_q_term + log_exp_term)
-        
-        # Log-sum-exp for numerical stability
-        max_log = max(log_terms)
-        if max_log == -float('inf'):
-            return 0.0
-        
-        log_sum = max_log + np.log(sum(np.exp(t - max_log) for t in log_terms))
-        rdp = log_sum / (alpha - 1)
-        
-        return max(0.0, rdp)
-    
-    # For non-integer orders, use a simpler upper bound
-    # This is the Gaussian mechanism bound without tight subsampling
-    # (conservative but correct)
-    return alpha * q**2 / (2 * sigma**2)
+from dp_accounting.pld import accountant as pld_accountant
+from dp_accounting.pld import common as pld_common
+from dp_accounting import dp_event
+from dp_accounting import privacy_accountant
 
 
 def compute_epsilon(
@@ -105,10 +32,10 @@ def compute_epsilon(
     noise_multiplier: float,
     delta: float = 1e-5
 ) -> float:
-    """Compute privacy epsilon using RDP accountant.
+    """Compute privacy epsilon using PLD (Privacy Loss Distribution) accountant.
     
-    Uses the analytical RDP bounds for subsampled Gaussian mechanism
-    from Mironov 2017, then converts to (epsilon, delta)-DP.
+    Uses Google's dp_accounting library for numerically tight privacy bounds,
+    matching the accounting used in the paper's jax-privacy implementation.
     
     Args:
         steps: Number of training steps
@@ -120,29 +47,26 @@ def compute_epsilon(
     Returns:
         Epsilon value
     """
-    # Subsampling rate
+    if noise_multiplier == 0:
+        return float('inf')
+    
     q = batch_size / dataset_size
     
-    # RDP orders to check (focus on integers for tight bounds)
-    orders = list(range(2, 64)) + [64, 128, 256, 512]
+    # Build the DP event: Poisson-subsampled Gaussian, composed over steps
+    event = dp_event.SelfComposedDpEvent(
+        event=dp_event.PoissonSampledDpEvent(
+            sampling_probability=q,
+            event=dp_event.GaussianDpEvent(noise_multiplier=noise_multiplier)
+        ),
+        count=steps
+    )
     
-    # Accumulate RDP over steps (composition)
-    rdp = [steps * compute_rdp_subsampled_gaussian(q, noise_multiplier, alpha) 
-           for alpha in orders]
+    # Use the PLD accountant for tight numerical bounds
+    accountant = pld_accountant.PLDAccountant()
+    accountant.compose(event)
     
-    # Convert RDP to (epsilon, delta)-DP using optimal conversion
-    def rdp_to_dp(rdp_value: float, alpha: float, delta: float) -> float:
-        """Convert RDP to (epsilon, delta)-DP."""
-        if rdp_value == float('inf'):
-            return float('inf')
-        if rdp_value == 0:
-            return 0.0
-        # Standard conversion: ε = ρ - log(δ)/(α-1) + log((α-1)/α)
-        # From Mironov 2017, Proposition 3
-        return rdp_value + np.log1p(-1/alpha) - (np.log(delta) + np.log(alpha)) / (alpha - 1)
-    
-    eps_candidates = [rdp_to_dp(r, a, delta) for r, a in zip(rdp, orders)]
-    return min(eps_candidates)
+    eps = accountant.get_epsilon(delta)
+    return eps
 
 
 def noise_multiplier_from_epsilon(
@@ -154,6 +78,8 @@ def noise_multiplier_from_epsilon(
     tol: float = 0.01
 ) -> float:
     """Binary search for noise multiplier that achieves target epsilon.
+    
+    Uses PLD accountant for tight bounds matching the paper's accounting.
     
     Args:
         target_epsilon: Target privacy budget
