@@ -344,6 +344,8 @@ def run_dp_audit_jax(
     batch_size: int,
     model_name: str = 'wrn16_4',
     noise_multiplier: float = None,
+    learning_rate: float = 0.4,
+    max_grad_norm: float = 1.0,
     aug_multiplicity: int = 0,
     gradient_accumulation_steps: int = 1,
     seed: int = 42,
@@ -372,6 +374,8 @@ def run_dp_audit_jax(
         num_epochs=num_epochs,
         batch_size=batch_size,
         noise_multiplier=noise_multiplier,
+        learning_rate=learning_rate,
+        max_grad_norm=max_grad_norm,
         aug_multiplicity=aug_multiplicity,
         gradient_accumulation_steps=gradient_accumulation_steps,
         seed=seed,
@@ -422,6 +426,10 @@ def main():
     parser.add_argument("--data-dir", type=str, default="./data", help="Data directory")
     parser.add_argument("--noise-multiplier", type=float, default=None,
                         help="Override noise multiplier (paper uses 1.75). If not set, computed from epsilon.")
+    parser.add_argument("--learning-rate", type=float, default=0.4,
+                        help="Learning rate (paper uses 0.4 per De et al. 2022)")
+    parser.add_argument("--max-grad-norm", type=float, default=1.0,
+                        help="Per-sample gradient clipping norm (default: 1.0)")
     parser.add_argument("--canary-path", type=str, default=None, help="Path to optimized canaries")
     parser.add_argument("--aug-multiplicity", type=int, default=0,
                         help="Augmentation multiplicity K (0=none, 16=paper default). "
@@ -443,6 +451,7 @@ def main():
     else:
         print(f"Noise multiplier: auto (computed from epsilon)")
     print(f"Batch size: {args.batch_size}")
+    print(f"Learning rate: {args.learning_rate}")
     print(f"Epochs: {args.epochs}")
     print(f"Seeds: {args.seeds}")
     if args.aug_multiplicity > 0:
@@ -514,6 +523,8 @@ def main():
                 batch_size=args.batch_size,
                 model_name=args.model,
                 noise_multiplier=args.noise_multiplier,
+                learning_rate=args.learning_rate,
+                max_grad_norm=args.max_grad_norm,
                 aug_multiplicity=args.aug_multiplicity,
                 gradient_accumulation_steps=args.gradient_accumulation_steps,
                 seed=seed,

@@ -109,7 +109,7 @@ def noise_multiplier_from_epsilon(
 def create_dp_train_state(
     rng: jax.Array,
     model: nn.Module,
-    learning_rate: float = 0.1,
+    learning_rate: float = 0.4,
     momentum: float = 0.9
 ) -> train_state.TrainState:
     """Create a Flax TrainState for DP-SGD training.
@@ -427,7 +427,7 @@ def train_dpsgd_jax(
     target_delta: float = 1e-5,
     num_epochs: int = 100,
     batch_size: int = 4096,
-    learning_rate: float = 0.1,
+    learning_rate: float = 0.4,
     max_grad_norm: float = 1.0,
     noise_multiplier: Optional[float] = None,
     aug_multiplicity: int = 0,
