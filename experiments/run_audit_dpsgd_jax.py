@@ -344,7 +344,7 @@ def run_dp_audit_jax(
     batch_size: int = 4096,
     model_name: str = 'wrn16_4',
     noise_multiplier: float = None,
-    learning_rate: float = 0.4,
+    learning_rate: float = 4.0,
     max_grad_norm: float = 1.0,
     aug_multiplicity: int = 0,
     gradient_accumulation_steps: int = 1,
