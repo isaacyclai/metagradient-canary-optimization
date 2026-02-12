@@ -39,7 +39,7 @@ EPOCHS="${EPOCHS:-850}"
 NUM_CANARIES="${NUM_CANARIES:-1000}"
 BATCH_SIZE="${BATCH_SIZE:-4096}"
 MODEL="${MODEL:-wrn16_4}"
-NOISE_MULTIPLIER="${NOISE_MULTIPLIER:-3.0}"
+NOISE_MULTIPLIER="${NOISE_MULTIPLIER-3.0}"
 LEARNING_RATE="${LEARNING_RATE:-4.0}"
 MAX_GRAD_NORM="${MAX_GRAD_NORM:-1.0}"
 SEEDS="${SEEDS:-5}"
@@ -83,6 +83,7 @@ CMD="uv run experiments/run_audit_dpsgd_jax.py \
     --num-canaries $NUM_CANARIES \
     --batch-size $BATCH_SIZE \
     --model $MODEL \
+    --noise-multiplier $NOISE_MULTIPLIER \
     --seeds $SEEDS \
     --data-dir $DATA_DIR \
     --learning-rate $LEARNING_RATE \
@@ -90,11 +91,6 @@ CMD="uv run experiments/run_audit_dpsgd_jax.py \
     --aug-multiplicity $AUG_MULT \
     --gradient-accumulation-steps $GRAD_ACC_STEPS \
     --output $OUTPUT"
-
-# Add noise multiplier if specified
-if [ -n "$NOISE_MULTIPLIER" ]; then
-    CMD="$CMD --noise-multiplier $NOISE_MULTIPLIER"
-fi
 
 # Add canary path if specified
 if [ -n "$CANARY_PATH" ]; then

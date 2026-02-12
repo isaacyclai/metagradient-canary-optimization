@@ -425,9 +425,9 @@ def main():
     parser.add_argument("--seeds", type=int, default=5, help="Number of random seeds")
     parser.add_argument("--data-dir", type=str, default="./data", help="Data directory")
     parser.add_argument("--noise-multiplier", type=float, default=None,
-                        help="Override noise multiplier (paper uses 1.75). If not set, computed from epsilon.")
-    parser.add_argument("--learning-rate", type=float, default=0.4,
-                        help="Learning rate (paper uses 0.4 per De et al. 2022)")
+                        help="Override noise multiplier (paper uses 3.0). If not set, computed from epsilon.")
+    parser.add_argument("--learning-rate", type=float, default=4.0,
+                        help="Learning rate (paper uses 4.0 per De et al. 2022)")
     parser.add_argument("--max-grad-norm", type=float, default=1.0,
                         help="Per-sample gradient clipping norm (default: 1.0)")
     parser.add_argument("--canary-path", type=str, default=None, help="Path to optimized canaries")
