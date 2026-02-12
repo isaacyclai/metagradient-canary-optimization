@@ -19,7 +19,7 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 
-from dp_accounting.pld import accountant as pld_accountant
+from dp_accounting.pld import pld_privacy_accountant
 from dp_accounting.pld import common as pld_common
 from dp_accounting import dp_event
 from dp_accounting import privacy_accountant
@@ -62,7 +62,7 @@ def compute_epsilon(
     )
     
     # Use the PLD accountant for tight numerical bounds
-    accountant = pld_accountant.PLDAccountant()
+    accountant = pld_privacy_accountant.PLDAccountant()
     accountant.compose(event)
     
     eps = accountant.get_epsilon(delta)
